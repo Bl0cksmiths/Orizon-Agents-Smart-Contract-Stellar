@@ -4,6 +4,22 @@ Cargo.lock
 *.wasm
 *.log
 .DS_Store
-addresses.json
-addresses.*.json
+# addresses.json and addresses.*.json are deliberately NOT ignored.
+#
+# They are this repo's record of which contracts are deployed, and ignoring
+# them made that record exist only on whichever laptop last ran a deploy: a
+# fresh clone had no address book at all, no CI anywhere could compare against
+# one, and the authoritative copy was one disk failure from being recoverable
+# only by reading it back out of a downstream copy in the backend's
+# .env.example.
+#
+# Nothing in them is secret. Contract ids are public on-chain identifiers, the
+# admin field is a public G-address, and every value is already committed to
+# README.md here and to .env.example, README.md, onchain-details.tsx and
+# lib/api.test.ts in the other two repos — so ignoring them protected nothing
+# and hid the one copy that is supposed to be canonical.
+#
+# scripts/deploy_testnet.sh writes these files, so a redeploy now produces a
+# diff. That is the point: a deployment that changes a contract id should
+# leave a commit saying so.
 .env
