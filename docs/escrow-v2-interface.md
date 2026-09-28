@@ -37,7 +37,10 @@ fn authorize(env, payer: Address, agent_id: Symbol, max_amount: i128, expires_at
 
 /// Settler only (caller.require_auth() and caller == settler, else Unauthorized).
 /// Refused when the authorization is missing (NotFound), reclaimed (Revoked),
-/// already settled (Replay), or past `expires_at` (Expired).
+/// or already settled (Replay). NOT refused for being past `expires_at`
+/// (amended for 5.01, finding S3): a long run must still pay the operators it
+/// used. The payer is protected by `reclaim`, which is allowed only after
+/// expiry, and whichever of `settle` and `reclaim` lands first wins.
 /// `payouts`: 0..=16 entries (else BadPayouts); every amount > 0 (BadAmount);
 /// their sum <= max_amount (Insufficient).
 /// For each payout: pay owner_of(agent_id) from custody, write a Receipt,
@@ -92,7 +95,7 @@ pub struct Authorization {
 |---|---|---|
 | 1 | Unauthorized | caller is not the settler / admin / the authorization's payer |
 | 2 | NotFound | no such authorization or receipt |
-| 4 | Expired | `authorize` with `expires_at <= now`, or `settle` after `expires_at` |
+| 4 | Expired | `authorize` with `expires_at <= now` |
 | 5 | Insufficient | payouts sum past `max_amount` |
 | 6 | Revoked | the payer already reclaimed it |
 | 7 | Replay | already settled |
