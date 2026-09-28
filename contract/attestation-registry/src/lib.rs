@@ -53,7 +53,11 @@ impl AttestationRegistry {
         if caller != sealer {
             return Err(Error::Unauthorized);
         }
-        if env.storage().persistent().has(&DataKey::Job(job_id.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Job(job_id.clone()))
+        {
             return Err(Error::AlreadyExists);
         }
 
@@ -69,8 +73,10 @@ impl AttestationRegistry {
             .persistent()
             .set(&DataKey::Job(job_id.clone()), &attestation);
 
-        env.events()
-            .publish((symbol_short!("sealed"), job_id), (orchestrator, total_spent));
+        env.events().publish(
+            (symbol_short!("sealed"), job_id),
+            (orchestrator, total_spent),
+        );
         Ok(())
     }
 

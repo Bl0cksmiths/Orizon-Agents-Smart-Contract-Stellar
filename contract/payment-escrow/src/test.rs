@@ -40,7 +40,12 @@ fn setup(env: &Env) -> Fixture {
     let settler = admin.clone();
     let esc_id = env.register(
         PaymentEscrow,
-        (admin.clone(), usdc_id.clone(), reg_id.clone(), settler.clone()),
+        (
+            admin.clone(),
+            usdc_id.clone(),
+            reg_id.clone(),
+            settler.clone(),
+        ),
     );
     let escrow = PaymentEscrowClient::new(env, &esc_id);
 
@@ -81,12 +86,17 @@ fn authorize_charge_receipt() {
     let f = setup(&env);
 
     // payer pre-authorizes 0.5 USDC (5_000_000 stroops) for the copy agent
-    let auth_id = f.escrow.authorize(&f.payer, &f.agent_id, &5_000_000, &9_999);
+    let auth_id = f
+        .escrow
+        .authorize(&f.payer, &f.agent_id, &5_000_000, &9_999);
 
     // settler (admin in test) charges 0.012 USDC of it
-    let receipt_id = f
-        .escrow
-        .charge(&f.admin, &auth_id, &120_000, &soroban_sdk::BytesN::from_array(&env, &[7u8; 16]));
+    let receipt_id = f.escrow.charge(
+        &f.admin,
+        &auth_id,
+        &120_000,
+        &soroban_sdk::BytesN::from_array(&env, &[7u8; 16]),
+    );
 
     let r = f.escrow.receipt(&receipt_id);
     assert_eq!(r.amount, 120_000);

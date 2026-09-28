@@ -61,8 +61,12 @@ pub mod codes {
     pub const REVOKED: u32 = 6;
     pub const REPLAY: u32 = 7;
     pub const INACTIVE: u32 = 8;
+    /// Escrow reclaim attempted before the authorization's window closed.
+    pub const LOCKED: u32 = 9;
     /// Rating or weight outside the accepted range (reputation-ledger).
     pub const OUT_OF_RANGE: u32 = 100;
     /// Non-positive authorize/charge amount (payment-escrow).
     pub const BAD_AMOUNT: u32 = 101;
+    /// More payouts in one escrow settle than the contract accepts (payment-escrow).
+    pub const BAD_PAYOUTS: u32 = 102;
 }

@@ -32,7 +32,9 @@ impl AgentRegistry {
     /// One-shot constructor set by Soroban at deploy time.
     pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Ids, &Vec::<Symbol>::new(&env));
+        env.storage()
+            .instance()
+            .set(&DataKey::Ids, &Vec::<Symbol>::new(&env));
     }
 
     /// Register a new agent. Owner-signed. Fails if id already exists.
@@ -60,7 +62,9 @@ impl AgentRegistry {
             registered_at: env.ledger().timestamp(),
         };
 
-        env.storage().persistent().set(&DataKey::Agent(id.clone()), &agent);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Agent(id.clone()), &agent);
 
         let mut ids: Vec<Symbol> = env
             .storage()
@@ -84,7 +88,9 @@ impl AgentRegistry {
             .ok_or(Error::NotFound)?;
         agent.owner.require_auth();
         agent.price = new_price;
-        env.storage().persistent().set(&DataKey::Agent(id.clone()), &agent);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Agent(id.clone()), &agent);
         env.events()
             .publish((symbol_short!("updated"), id), symbol_short!("price"));
         Ok(())
@@ -99,9 +105,10 @@ impl AgentRegistry {
             .ok_or(Error::NotFound)?;
         agent.owner.require_auth();
         agent.active = active;
-        env.storage().persistent().set(&DataKey::Agent(id.clone()), &agent);
-        env.events()
-            .publish((symbol_short!("active"), id), active);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Agent(id.clone()), &agent);
+        env.events().publish((symbol_short!("active"), id), active);
         Ok(())
     }
 

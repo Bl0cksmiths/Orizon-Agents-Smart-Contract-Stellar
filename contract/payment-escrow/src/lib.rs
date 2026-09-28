@@ -2,8 +2,8 @@
 
 use orizon_shared::{Authorization, Receipt};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address,
-    BytesN, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Symbol,
 };
 
 /// Minimal import of the agent-registry's `owner_of` view so we can resolve payouts.
@@ -189,8 +189,7 @@ impl PaymentEscrow {
         env.storage()
             .persistent()
             .set(&DataKey::Auth(auth_id.clone()), &auth);
-        env.events()
-            .publish((symbol_short!("revoked"),), auth_id);
+        env.events().publish((symbol_short!("revoked"),), auth_id);
         Ok(())
     }
 
