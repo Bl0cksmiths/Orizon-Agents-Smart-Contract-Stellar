@@ -48,6 +48,10 @@ fn authorize(env, payer: Address, agent_id: Symbol, max_amount: i128, expires_at
 /// authorization settled, emit `settled`. All in one transaction.
 /// An empty `payouts` is a full release: nothing was delivered, everything
 /// goes back to the payer.
+/// A payout naming an agent the AgentRegistry does not hold makes the
+/// `owner_of` cross-call trap, and the WHOLE settle reverts with a host error
+/// (not a contract code). The seeded `agt_*` catalogue is not on-chain, so the
+/// backend must leave any step without an on-chain owner out of `payouts`.
 /// Returns the receipt ids, in `payouts` order.
 fn settle(env, caller: Address, auth_id: BytesN<16>, job_id: BytesN<16>, payouts: Vec<Payout>)
     -> Result<Vec<BytesN<16>>, Error>;
