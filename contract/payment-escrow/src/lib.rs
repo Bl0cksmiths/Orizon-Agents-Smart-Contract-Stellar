@@ -148,6 +148,7 @@ impl PaymentEscrow {
     /// a receipt per payout, returns the remainder to the payer and marks the
     /// authorization settled, all in one transaction. An empty `payouts` is a
     /// full release back to the payer. Returns the receipt ids in order.
+    /// Allowed after `expires_at` for as long as the payer has not reclaimed.
     pub fn settle(
         env: Env,
         caller: Address,
@@ -167,9 +168,9 @@ impl PaymentEscrow {
         if auth.settled {
             return Err(Error::Replay);
         }
-        if env.ledger().timestamp() > auth.expires_at {
-            return Err(Error::Expired);
-        }
+        // Deliberately NOT refused past `expires_at`: a long run must still pay
+        // the operators it used. After expiry the payer may `reclaim` instead,
+        // and whichever of the two lands first wins.
 
         if payouts.len() > MAX_PAYOUTS {
             return Err(Error::BadPayouts);
