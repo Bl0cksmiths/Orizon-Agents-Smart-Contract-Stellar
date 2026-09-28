@@ -1,4 +1,7 @@
 #![no_std]
+// `seal` takes eight arguments by design (one per attestation field), and the
+// client `#[contractimpl]` generates beside it mirrors them.
+#![allow(clippy::too_many_arguments)]
 
 use orizon_shared::Attestation;
 use soroban_sdk::{
