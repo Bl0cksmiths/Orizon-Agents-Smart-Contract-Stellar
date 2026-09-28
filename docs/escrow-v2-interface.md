@@ -27,8 +27,11 @@ operator** at `settle`, and letting the admin **rotate the settler**.
 fn __constructor(env, admin: Address, usdc: Address, registry: Address, settler: Address);
 
 /// UNCHANGED SIGNATURE from v1, so every transaction builder keeps working.
-/// `agent_id` is now a label for the authorization (the console sends
-/// `orizon_batch`); payouts name their own agents at `settle`.
+/// `agent_id` is now a label for the authorization, and the label is the
+/// PLAN ID the buyer is paying for (`pln_` + 8 hex, a valid Symbol). The
+/// backend refuses to execute a plan against an authorization whose label,
+/// payer, cap or state does not match (finding S2); payouts name their own
+/// agents at `settle`.
 /// payer.require_auth(); max_amount > 0 (BadAmount); expires_at > now (Expired).
 /// Moves `max_amount` payer -> this contract in the same invocation, so the
 /// payer's one signature covers both.
