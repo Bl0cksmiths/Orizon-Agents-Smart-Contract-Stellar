@@ -81,6 +81,7 @@ impl PaymentEscrow {
             spent: 0,
             expires_at,
             revoked: false,
+            settled: false,
         };
         env.storage()
             .persistent()

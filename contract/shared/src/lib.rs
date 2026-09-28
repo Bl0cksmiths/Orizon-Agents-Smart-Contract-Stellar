@@ -16,7 +16,7 @@ pub struct Agent {
     pub registered_at: u64,
 }
 
-/// Pre-authorization created by a payer; consumed by `charge`.
+/// Pre-authorization created by a payer; paid out by escrow `settle`.
 #[contracttype]
 #[derive(Clone)]
 pub struct Authorization {
@@ -25,10 +25,13 @@ pub struct Authorization {
     pub max_amount: i128,
     pub spent: i128,
     pub expires_at: u64,
+    /// Reclaimed by the payer.
     pub revoked: bool,
+    /// Paid out by the settler; `spent` is the sum paid.
+    pub settled: bool,
 }
 
-/// Payment receipt produced by a successful `charge`.
+/// Payment receipt, one per payout of a successful escrow `settle`.
 #[contracttype]
 #[derive(Clone)]
 pub struct Receipt {

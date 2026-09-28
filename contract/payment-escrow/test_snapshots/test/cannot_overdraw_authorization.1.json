@@ -426,6 +426,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "settled"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "spent"
                     },
                     "val": {
