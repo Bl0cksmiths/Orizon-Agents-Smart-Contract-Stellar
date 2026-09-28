@@ -691,22 +691,50 @@ fn settle_replay_is_refused() {
     assert_eq!(balances(&f), after_first);
 }
 
+// Settle is not refused past expiry (interface amendment, finding S3). After
+// expiry, whichever of settle and reclaim lands first wins.
+
 #[test]
-fn settle_is_allowed_at_expiry_and_refused_after() {
+fn settle_after_expiry_pays_while_unreclaimed() {
     let f = setup();
-    let late = authorize(&f);
-    let on_time = authorize(&f);
-    let payouts = vec![&f.env, payout(&f.agent_a, PRICE_A)];
-
+    let auth_id = authorize(&f);
     set_time(&f.env, EXPIRES + 1);
-    assert_eq!(
-        contract_err(try_settle(&f, &f.settler, &late, &payouts)),
-        Error::Expired
-    );
+    let payouts = vec![
+        &f.env,
+        payout(&f.agent_a, PRICE_A),
+        payout(&f.agent_b, PRICE_B),
+    ];
+    let receipts = settle(&f, &auth_id, &payouts);
+    assert_eq!(receipts.len(), 2);
+    let returned = MAX - PRICE_A - PRICE_B;
+    assert_eq!(balances(&f), (FUND - MAX + returned, 0, PRICE_A, PRICE_B));
+    let a = f.escrow.authorization(&auth_id);
+    assert!(a.settled);
+    assert_eq!(a.spent, PRICE_A + PRICE_B);
+}
 
-    set_time(&f.env, EXPIRES);
-    settle(&f, &on_time, &payouts);
-    assert_eq!(f.usdc.balance(&f.owner_a), PRICE_A);
+#[test]
+fn settle_after_expiry_loses_to_an_earlier_reclaim() {
+    let f = setup();
+    let auth_id = authorize(&f);
+    set_time(&f.env, EXPIRES + 1);
+    assert_eq!(try_reclaim(&f, &auth_id).unwrap().unwrap(), MAX);
+    let payouts = vec![&f.env, payout(&f.agent_a, PRICE_A)];
+    assert_eq!(
+        contract_err(try_settle(&f, &f.settler, &auth_id, &payouts)),
+        Error::Revoked
+    );
+    assert_eq!(balances(&f), (FUND, 0, 0, 0));
+}
+
+#[test]
+fn reclaim_after_expiry_loses_to_an_earlier_settle() {
+    let f = setup();
+    let auth_id = authorize(&f);
+    set_time(&f.env, EXPIRES + 1);
+    settle(&f, &auth_id, &vec![&f.env, payout(&f.agent_a, PRICE_A)]);
+    assert_eq!(contract_err(try_reclaim(&f, &auth_id)), Error::Replay);
+    assert_eq!(balances(&f), (FUND - PRICE_A, 0, PRICE_A, 0));
 }
 
 #[test]
@@ -994,4 +1022,22 @@ fn ttl_keeps_authorizations_alive_through_their_window() {
     );
     f.escrow.receipt(&receipt_id);
     assert_eq!(entry_ttl(&f, &receipt_key), ENTRY_EXTEND_TO);
+}
+
+#[test]
+fn ttl_lets_a_settle_a_day_after_expiry_find_the_authorization() {
+    let f = setup();
+    let auth_id = authorize(&f);
+    let auth_key = DataKey::Auth(auth_id.clone());
+    let window_ledgers = ((EXPIRES - T0) / 5) as u32;
+
+    // Nothing touches the entry through its window and one more day.
+    advance_ledgers(&f.env, window_ledgers + DAY_IN_LEDGERS);
+    set_time(&f.env, EXPIRES + 24 * 3600);
+    assert_eq!(entry_ttl(&f, &auth_key), ENTRY_EXTEND_TO - DAY_IN_LEDGERS);
+
+    // It is still live, so the late settle finds it and pays.
+    settle(&f, &auth_id, &vec![&f.env, payout(&f.agent_a, PRICE_A)]);
+    assert_eq!(balances(&f), (FUND - PRICE_A, 0, PRICE_A, 0));
+    assert!(f.escrow.authorization(&auth_id).settled);
 }
