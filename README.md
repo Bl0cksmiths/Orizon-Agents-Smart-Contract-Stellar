@@ -43,7 +43,7 @@ Admin: `GA7AI5TAJEZA27I666DSJC4MUJYBEWUYNNZWPU7R2ONA7IZQVO6R5OQV`
 | --- | --- |
 | `agent-registry` | ERC-8004-style identity, skills, price catalog |
 | `reputation-ledger` | decayed, value-weighted rating evidence per agent (v2) |
-| `payment-escrow` | x402-style per-call USDC authorize / charge / receipt |
+| `payment-escrow` | x402-style USDC escrow (v2): custody at authorize, per-operator payouts at settle, payer reclaim |
 | `attestation-registry` | write-once workflow receipts (job_id → proof record) |
 
 Target: **Stellar mainnet** (production) + **testnet**, Protocol 22+. Payments settle in **USDC** via the Stellar Asset Contract (SEP-41).
@@ -55,6 +55,25 @@ Decayed, value-weighted, dispute-aware evidence store (Jøsang beta-reputation w
 - `submit(caller, agent_id, job_id, rating_0_to_100, weight, payer, kind)` — scorer-only. `weight` is the job's USDC value in stroops, capped at 100 USDC per rating; the `(agent, job)` replay guard lives in **persistent** storage (v1 kept it in temporary storage, which expires). `kind = "dispute"` also bumps the lifetime dispute counter.
 - Evidence decays by λ = 0.925 per weekly epoch (≈ 9-week half-life), applied lazily; after 96 idle epochs it is fully forgotten. Lifetime `count` / `disputed` never decay.
 - Views (all decay-to-now, read-only): `rep_state`, `avg_bps` (weighted mean, basis points), `rep_bps(prior_bps, prior_weight)` (Bayesian-smoothed toward a caller-supplied prior), `dispute_rate_bps`, `payer_weight` (cumulative per-payer stake for off-chain Sybil analysis).
+
+### PaymentEscrow v2
+
+Frozen interface: [`docs/escrow-v2-interface.md`](docs/escrow-v2-interface.md). v1 (`CBJPTMAP…25PI`) can never settle on-chain: its `charge` moved funds out of the payer's balance under only the settler's signature, its settler was fixed at construction, and it paid the authorization's label rather than each step's operator. v2 fixes all three:
+
+- `authorize(payer, agent_id, max_amount, expires_at)` — signature unchanged from v1. Moves `max_amount` from the payer into the contract's **custody** in the same invocation, so the payer's one auth entry covers the root call and its nested SAC `transfer`. `agent_id` is now only a label: the plan id being paid for (`pln_` + 8 hex). Rejects `max_amount <= 0` (BadAmount) and `expires_at <= now` (Expired).
+- `settle(caller, auth_id, job_id, payouts)` — settler only. Up to 16 `Payout { agent_id, amount }`, each `> 0`, summing to at most `max_amount`. Pays each `owner_of(agent_id)` from custody with a receipt and a v1-shaped `charged` event (topic = the agent actually paid), returns the remainder to the payer, marks the authorization `settled`. An empty list is a full release. State is written before any transfer. **Not refused after `expires_at`**, so a long run still pays the operators it used; it is refused only for an unknown (NotFound), reclaimed (Revoked) or already-settled (Replay) authorization. A payout to an agent the registry does not hold reverts the whole settle with a host error.
+- `reclaim(payer, auth_id)` — the payer takes the full `max_amount` back from an unsettled authorization, only once `now > expires_at` (Locked before then). After expiry, whichever of `settle` and `reclaim` lands first wins: the other gets Replay or Revoked.
+- `set_settler(new_settler)` — admin only; the settler can be rotated without a redeploy.
+- Views: `authorization`, `receipt`, `settler`, `admin`, `version` (= 2). `charge` and `revoke` are gone.
+- Storage: the instance is kept at 30 days' TTL; every Auth and Receipt entry is extended to 30 days on each write and read, and an open authorization additionally for its whole window, so it cannot be archived before it is settled or reclaimed, including by a settle that lands after expiry.
+
+The tests run every money path under an explicit authorization tree (`env.mock_auths`, asserted with `env.auths()`), never `mock_all_auths*`, against a real Stellar Asset Contract and the real AgentRegistry.
+
+Deploy v2 alone on testnet, beside the existing contracts (reuses the registry and asset SAC in `addresses.json`, records `payment_escrow_v2` there, keeps v1's id as history):
+
+```bash
+make deploy-escrow-v2 SETTLER=G...        # SOURCE=admin by default; the source's address becomes the escrow admin
+```
 
 ## One-time setup
 
@@ -85,6 +104,7 @@ make test          # cargo test --all
 make build         # stellar contract build → target/wasm32-unknown-unknown/release/*.wasm
 make deploy-test   # deploys all four to testnet; writes addresses.json
 make deploy-main   # deploys all four to mainnet (CONFIRM_MAINNET=yes guard); writes addresses.mainnet.json
+make deploy-escrow-v2 SETTLER=G...  # deploys only PaymentEscrow v2 to testnet; adds payment_escrow_v2 to addresses.json
 ```
 
 Per-network address books (`addresses.json` for testnet, `addresses.mainnet.json` for mainnet) are gitignored.
@@ -92,8 +112,8 @@ Per-network address books (`addresses.json` for testnet, `addresses.mainnet.json
 ## Job lifecycle (on-chain)
 
 ```
-authorize(payer, agent_id, max, expires)  → auth_id      ← PaymentEscrow
-charge(caller, auth_id, amount, job_id)   → receipt_id   ← PaymentEscrow (× per step)
+authorize(payer, agent_id, max, expires)  → auth_id       ← PaymentEscrow (payer → custody)
+settle(caller, auth_id, job_id, payouts)  → receipt_ids   ← PaymentEscrow (custody → each operator, rest → payer)
 seal(caller, job_id, orchestrator,        → ()           ← AttestationRegistry
      intent_hash, agents, receipts, total_spent)
 submit(caller, agent_id, job_id, rating,  → ()           ← ReputationLedger

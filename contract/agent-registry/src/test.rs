@@ -1,11 +1,7 @@
 #![cfg(test)]
 
 use crate::{AgentRegistry, AgentRegistryClient, Error};
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    vec, Address, Env, String,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, vec, Address, Env, String};
 
 fn setup(env: &Env) -> (AgentRegistryClient<'_>, Address) {
     let admin = Address::generate(env);

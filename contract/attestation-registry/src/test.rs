@@ -1,11 +1,7 @@
 #![cfg(test)]
 
 use crate::{AttestationRegistry, AttestationRegistryClient, Error};
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    vec, Address, BytesN, Env,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, vec, Address, BytesN, Env};
 
 fn setup(env: &Env) -> (AttestationRegistryClient<'_>, Address, Address) {
     let admin = Address::generate(env);
@@ -31,7 +27,13 @@ fn seal_and_read() {
     ];
 
     client.seal(
-        &sealer, &job, &orch, &intent_hash, &agents, &receipts, &180_000,
+        &sealer,
+        &job,
+        &orch,
+        &intent_hash,
+        &agents,
+        &receipts,
+        &180_000,
     );
 
     assert!(client.exists(&job));
@@ -53,8 +55,6 @@ fn write_once() {
     let receipts = vec![&env, BytesN::from_array(&env, &[3u8; 16])];
 
     client.seal(&sealer, &job, &orch, &intent_hash, &agents, &receipts, &10);
-    let err = client.try_seal(
-        &sealer, &job, &orch, &intent_hash, &agents, &receipts, &10,
-    );
+    let err = client.try_seal(&sealer, &job, &orch, &intent_hash, &agents, &receipts, &10);
     assert_eq!(err.err().unwrap().unwrap(), Error::AlreadyExists);
 }

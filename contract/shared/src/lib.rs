@@ -16,7 +16,7 @@ pub struct Agent {
     pub registered_at: u64,
 }
 
-/// Pre-authorization created by a payer; consumed by `charge`.
+/// Pre-authorization created by a payer; paid out by escrow `settle`.
 #[contracttype]
 #[derive(Clone)]
 pub struct Authorization {
@@ -25,10 +25,13 @@ pub struct Authorization {
     pub max_amount: i128,
     pub spent: i128,
     pub expires_at: u64,
+    /// Reclaimed by the payer.
     pub revoked: bool,
+    /// Paid out by the settler; `spent` is the sum paid.
+    pub settled: bool,
 }
 
-/// Payment receipt produced by a successful `charge`.
+/// Payment receipt, one per payout of a successful escrow `settle`.
 #[contracttype]
 #[derive(Clone)]
 pub struct Receipt {
@@ -61,8 +64,12 @@ pub mod codes {
     pub const REVOKED: u32 = 6;
     pub const REPLAY: u32 = 7;
     pub const INACTIVE: u32 = 8;
+    /// Escrow reclaim attempted before the authorization's window closed.
+    pub const LOCKED: u32 = 9;
     /// Rating or weight outside the accepted range (reputation-ledger).
     pub const OUT_OF_RANGE: u32 = 100;
     /// Non-positive authorize/charge amount (payment-escrow).
     pub const BAD_AMOUNT: u32 = 101;
+    /// More payouts in one escrow settle than the contract accepts (payment-escrow).
+    pub const BAD_PAYOUTS: u32 = 102;
 }
