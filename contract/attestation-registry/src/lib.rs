@@ -3,7 +3,7 @@
 // client `#[contractimpl]` generates beside it mirrors them.
 #![allow(clippy::too_many_arguments)]
 
-use orizon_shared::Attestation;
+use orizon_shared::{ttl, Attestation};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     Symbol, Vec,
@@ -34,9 +34,11 @@ impl AttestationRegistry {
     pub fn __constructor(env: Env, admin: Address, sealer: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Sealer, &sealer);
+        ttl::extend_instance(&env);
     }
 
-    /// Write-once. The caller must be the registered sealer.
+    /// Write-once. The caller must be the registered sealer. The seal and
+    /// the contract instance are extended to the full lifetime.
     pub fn seal(
         env: Env,
         caller: Address,
@@ -72,9 +74,10 @@ impl AttestationRegistry {
             total_spent,
             sealed_at: env.ledger().timestamp(),
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Job(job_id.clone()), &attestation);
+        let key = DataKey::Job(job_id.clone());
+        env.storage().persistent().set(&key, &attestation);
+        ttl::extend_persistent(&env, &key);
+        ttl::extend_instance(&env);
 
         env.events().publish(
             (symbol_short!("sealed"), job_id),
@@ -83,15 +86,29 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Reads a seal. Inside a submitted transaction this also re-extends the
+    /// seal and the instance (a simulated read changes nothing on chain).
     pub fn get(env: Env, job_id: BytesN<16>) -> Result<Attestation, Error> {
-        env.storage()
+        let key = DataKey::Job(job_id);
+        let attestation = env
+            .storage()
             .persistent()
-            .get(&DataKey::Job(job_id))
-            .ok_or(Error::NotFound)
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        ttl::extend_persistent(&env, &key);
+        ttl::extend_instance(&env);
+        Ok(attestation)
     }
 
+    /// Whether a job is sealed; re-extends it as `get` does when it is.
     pub fn exists(env: Env, job_id: BytesN<16>) -> bool {
-        env.storage().persistent().has(&DataKey::Job(job_id))
+        let key = DataKey::Job(job_id);
+        let sealed = env.storage().persistent().has(&key);
+        if sealed {
+            ttl::extend_persistent(&env, &key);
+        }
+        ttl::extend_instance(&env);
+        sealed
     }
 
     pub fn set_sealer(env: Env, new_sealer: Address) -> Result<(), Error> {
@@ -102,6 +119,7 @@ impl AttestationRegistry {
             .ok_or(Error::NotFound)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Sealer, &new_sealer);
+        ttl::extend_instance(&env);
         Ok(())
     }
 }
