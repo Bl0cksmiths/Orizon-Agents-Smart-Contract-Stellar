@@ -109,6 +109,32 @@ make deploy-escrow-v2 SETTLER=G...  # deploys only PaymentEscrow v2 to testnet; 
 
 Per-network address books (`addresses.json` for testnet, `addresses.mainnet.json` for mainnet) are gitignored.
 
+## Storage lifetime (TTL)
+
+Soroban archives a contract's instance, its wasm and each persistent entry once its TTL runs out, and a read of an archived entry fails until it is restored. The registries and the ledger extend what they touch (defect D-083):
+
+- `AgentRegistry`, `ReputationLedger`, `AttestationRegistry`: every write and every read extends the instance (which carries the wasm) and the records involved to 180 days. That's the network maximum today, and the contracts clamp to whatever the live maximum is. An entry is only re-extended once it has less than 179 days left, so rent is paid at most about once a day per entry. Helpers: `orizon_shared::ttl`.
+- `PaymentEscrow` v2: 30 days, see above.
+
+Only a call inside a **submitted** transaction extends anything. The backend and the site read by simulation, which changes nothing on chain, and the contracts deployed before this change don't extend at all. Keep everything alive with the keeper script:
+
+```bash
+make ttl-check                     # read-only: every contract in addresses.json, before live-until, and the commands it would run
+make ttl-extend SOURCE=ttl-keeper  # extends the instance, wasm and persistent entries that have < 150 days left, to ~173 days
+python3 scripts/extend_ttl.py --help   # --restore-archived, --keys-file, --network mainnet --rpc-url …, thresholds
+```
+
+It finds each contract's persistent entries through the stellar.expert contract-data index and reads every live-until from Soroban RPC. `--keys-file` adds keys by hand, and `--no-discover` skips the index. Extending needs no contract role: any funded account can pay, so use a throwaway identity (`stellar keys generate ttl-keeper --network testnet --fund`). It's idempotent, and a run straight after another does nothing. Archived entries are reported and left alone unless `--restore-archived` is passed.
+
+Run it on a schedule well inside the 150-day renew window, e.g. weekly from any machine that holds the identity:
+
+```cron
+# crontab -e   (Mondays 03:00 UTC)
+0 3 * * 1  cd /path/to/Orizon-Agents-Smart-Contract-Stellar && python3 scripts/extend_ttl.py --apply --source ttl-keeper --quiet >> ~/orizon-ttl.log 2>&1
+```
+
+A systemd timer or any CI scheduler with the identity's secret (`STELLAR_ACCOUNT`) works the same way. The repo deliberately ships no workflow for it.
+
 ## Job lifecycle (on-chain)
 
 ```
@@ -134,6 +160,7 @@ contract/
 scripts/
   deploy_testnet.sh       # deploys everything, outputs addresses.json
   fund_accounts.sh        # friendbot for local test accounts
+  extend_ttl.py           # storage-lifetime keeper (dry run by default)
 ```
 
 MVP contracts are **not upgradable**. Re-deploy on logic changes.
