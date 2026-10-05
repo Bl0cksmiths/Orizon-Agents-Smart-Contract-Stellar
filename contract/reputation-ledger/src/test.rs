@@ -1,10 +1,14 @@
 #![cfg(test)]
 
-use crate::{Error, ReputationLedger, ReputationLedgerClient};
+use crate::{DataKey, Error, ReputationLedger, ReputationLedgerClient};
+use orizon_shared::ttl::DAY_IN_LEDGERS;
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Ledger},
-    Address, BytesN, Env,
+    testutils::{
+        storage::{Instance as _, Persistent as _},
+        Address as _, Ledger, LedgerInfo,
+    },
+    Address, BytesN, Env, Symbol,
 };
 
 const EPOCH_SECONDS: u64 = 604_800;
@@ -474,4 +478,162 @@ fn payer_weight_accumulates_per_payer() {
     // cumulative payer stake is never decayed
     advance_epochs(&env, 20);
     assert_eq!(client.payer_weight(&agent, &payer_a), 3_000_000);
+}
+
+// ── storage lifetime (D-083) ──────────────────────────────────────────
+//
+// The live ledger never extended anything, so its instance, wasm and every
+// rating record lived only the network minimum (7 days) past their last
+// write. These run on testnet's real limits.
+
+fn ledger_with_testnet_limits(env: &Env) {
+    env.ledger().set(LedgerInfo {
+        timestamp: 1_000,
+        protocol_version: 25,
+        sequence_number: 100,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 120_960,
+        max_entry_ttl: 3_110_400,
+    });
+}
+
+fn age(env: &Env, days: u32) {
+    env.ledger()
+        .with_mut(|li| li.sequence_number += days * DAY_IN_LEDGERS);
+}
+
+fn ttl_of(env: &Env, client: &ReputationLedgerClient, key: &DataKey) -> u32 {
+    env.as_contract(&client.address, || env.storage().persistent().get_ttl(key))
+}
+
+fn instance_ttl(env: &Env, client: &ReputationLedgerClient) -> u32 {
+    env.as_contract(&client.address, || env.storage().instance().get_ttl())
+}
+
+/// One rating; returns the three keys it writes: Rep, Rated, PayerW.
+fn rate(
+    env: &Env,
+    client: &ReputationLedgerClient,
+    scorer: &Address,
+    agent: &Symbol,
+    payer: &Address,
+    n: u8,
+) -> [DataKey; 3] {
+    client.submit(
+        scorer,
+        agent,
+        &job(env, n),
+        &90,
+        &1_000_000,
+        payer,
+        &symbol_short!("rating"),
+    );
+    [
+        DataKey::Rep(agent.clone()),
+        DataKey::Rated(agent.clone(), job(env, n)),
+        DataKey::PayerW(agent.clone(), payer.clone()),
+    ]
+}
+
+#[test]
+fn ttl_deploy_and_submit_extend_to_the_network_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_with_testnet_limits(&env);
+    let (client, _admin, scorer) = setup(&env);
+    let max = env.storage().max_ttl();
+    assert_eq!(instance_ttl(&env, &client), max);
+
+    age(&env, 2);
+    let agent = symbol_short!("copy_v3");
+    let payer = Address::generate(&env);
+    for key in rate(&env, &client, &scorer, &agent, &payer, 1) {
+        assert_eq!(ttl_of(&env, &client, &key), max);
+    }
+    assert_eq!(instance_ttl(&env, &client), max);
+
+    // A later rating re-extends the agent's shared records; the first job's
+    // replay marker is left to age.
+    age(&env, 2);
+    let [rep, _, payer_w] = rate(&env, &client, &scorer, &agent, &payer, 2);
+    assert_eq!(ttl_of(&env, &client, &rep), max);
+    assert_eq!(ttl_of(&env, &client, &payer_w), max);
+    assert_eq!(
+        ttl_of(&env, &client, &DataKey::Rated(agent.clone(), job(&env, 1))),
+        max - 2 * DAY_IN_LEDGERS
+    );
+}
+
+#[test]
+fn ttl_reads_re_extend_the_score_and_the_instance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_with_testnet_limits(&env);
+    let (client, _admin, scorer) = setup(&env);
+    let max = env.storage().max_ttl();
+    let agent = symbol_short!("copy_v3");
+    let payer = Address::generate(&env);
+    let [rep, _, payer_w] = rate(&env, &client, &scorer, &agent, &payer, 1);
+
+    // Every score view goes through the same read.
+    age(&env, 2);
+    client.rep_state(&agent);
+    assert_eq!(ttl_of(&env, &client, &rep), max);
+    assert_eq!(instance_ttl(&env, &client), max);
+    age(&env, 2);
+    client.avg_bps(&agent);
+    assert_eq!(ttl_of(&env, &client, &rep), max);
+    age(&env, 2);
+    client.rep_bps(&agent, &7_000, &120_000_000);
+    assert_eq!(ttl_of(&env, &client, &rep), max);
+    age(&env, 2);
+    client.dispute_rate_bps(&agent);
+    assert_eq!(ttl_of(&env, &client, &rep), max);
+
+    assert_eq!(ttl_of(&env, &client, &payer_w), max - 8 * DAY_IN_LEDGERS);
+    client.payer_weight(&agent, &payer);
+    assert_eq!(ttl_of(&env, &client, &payer_w), max);
+
+    // Agents and payers with no records read as zero, extending nothing.
+    let nobody = symbol_short!("nobody");
+    assert_eq!(client.rep_state(&nobody).count, 0);
+    assert_eq!(client.payer_weight(&nobody, &payer), 0);
+
+    // Inside the renew window a read pays no rent.
+    env.ledger()
+        .with_mut(|li| li.sequence_number += DAY_IN_LEDGERS - 1);
+    client.avg_bps(&agent);
+    assert_eq!(ttl_of(&env, &client, &rep), max - (DAY_IN_LEDGERS - 1));
+}
+
+#[test]
+fn ttl_set_scorer_extends_the_instance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_with_testnet_limits(&env);
+    let (client, _admin, _scorer) = setup(&env);
+    let max = env.storage().max_ttl();
+
+    age(&env, 2);
+    client.set_scorer(&Address::generate(&env));
+    assert_eq!(instance_ttl(&env, &client), max);
+}
+
+#[test]
+fn ttl_untouched_ratings_stay_live_past_the_minimum_lifetime() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_with_testnet_limits(&env);
+    let (client, _admin, scorer) = setup(&env);
+    let max = env.storage().max_ttl();
+    let payer = Address::generate(&env);
+    let keys = rate(&env, &client, &scorer, &symbol_short!("copy_v3"), &payer, 1);
+
+    age(&env, 170);
+    for key in keys {
+        assert_eq!(ttl_of(&env, &client, &key), max - 170 * DAY_IN_LEDGERS);
+    }
+    assert_eq!(instance_ttl(&env, &client), max - 170 * DAY_IN_LEDGERS);
 }
