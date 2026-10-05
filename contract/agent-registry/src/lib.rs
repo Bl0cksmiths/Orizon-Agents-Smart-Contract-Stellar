@@ -1,6 +1,6 @@
 #![no_std]
 
-use orizon_shared::Agent;
+use orizon_shared::{ttl, Agent};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
     Symbol, Vec,
@@ -35,6 +35,7 @@ impl AgentRegistry {
         env.storage()
             .instance()
             .set(&DataKey::Ids, &Vec::<Symbol>::new(&env));
+        ttl::extend_instance(&env);
     }
 
     /// Register a new agent. Owner-signed. Fails if id already exists.
@@ -62,9 +63,7 @@ impl AgentRegistry {
             registered_at: env.ledger().timestamp(),
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Agent(id.clone()), &agent);
+        write_agent(&env, &agent);
 
         let mut ids: Vec<Symbol> = env
             .storage()
@@ -73,6 +72,7 @@ impl AgentRegistry {
             .unwrap_or_else(|| Vec::new(&env));
         ids.push_back(id.clone());
         env.storage().instance().set(&DataKey::Ids, &ids);
+        ttl::extend_instance(&env);
 
         env.events()
             .publish((symbol_short!("regd"), id.clone()), owner);
@@ -81,16 +81,10 @@ impl AgentRegistry {
 
     /// Update per-call price. Must be signed by the current owner.
     pub fn update_price(env: Env, id: Symbol, new_price: i128) -> Result<(), Error> {
-        let mut agent: Agent = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Agent(id.clone()))
-            .ok_or(Error::NotFound)?;
+        let mut agent = read_agent(&env, &id)?;
         agent.owner.require_auth();
         agent.price = new_price;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Agent(id.clone()), &agent);
+        write_agent(&env, &agent);
         env.events()
             .publish((symbol_short!("updated"), id), symbol_short!("price"));
         Ok(())
@@ -98,26 +92,17 @@ impl AgentRegistry {
 
     /// Activate / deactivate. Owner-signed.
     pub fn set_active(env: Env, id: Symbol, active: bool) -> Result<(), Error> {
-        let mut agent: Agent = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Agent(id.clone()))
-            .ok_or(Error::NotFound)?;
+        let mut agent = read_agent(&env, &id)?;
         agent.owner.require_auth();
         agent.active = active;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Agent(id.clone()), &agent);
+        write_agent(&env, &agent);
         env.events().publish((symbol_short!("active"), id), active);
         Ok(())
     }
 
     /// View — full agent record.
     pub fn get(env: Env, id: Symbol) -> Result<Agent, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Agent(id))
-            .ok_or(Error::NotFound)
+        read_agent(&env, &id)
     }
 
     /// View — owner address (used by PaymentEscrow.charge to resolve payout).
@@ -128,6 +113,7 @@ impl AgentRegistry {
 
     /// View — all registered ids (capped: workspace agrees to bound registrations).
     pub fn list_ids(env: Env) -> Vec<Symbol> {
+        ttl::extend_instance(&env);
         env.storage()
             .instance()
             .get(&DataKey::Ids)
@@ -136,11 +122,34 @@ impl AgentRegistry {
 
     /// View — admin that deployed / holds emergency control.
     pub fn admin(env: Env) -> Address {
+        ttl::extend_instance(&env);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
             .expect("admin must be set")
     }
+}
+
+/// Reads an agent record. Inside a submitted transaction this re-extends the
+/// record and the instance; a simulated read changes nothing on chain.
+fn read_agent(env: &Env, id: &Symbol) -> Result<Agent, Error> {
+    let key = DataKey::Agent(id.clone());
+    let agent = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(Error::NotFound)?;
+    ttl::extend_persistent(env, &key);
+    ttl::extend_instance(env);
+    Ok(agent)
+}
+
+/// Writes an agent record and extends it and the instance to full lifetime.
+fn write_agent(env: &Env, agent: &Agent) {
+    let key = DataKey::Agent(agent.id.clone());
+    env.storage().persistent().set(&key, agent);
+    ttl::extend_persistent(env, &key);
+    ttl::extend_instance(env);
 }
 
 #[cfg(test)]
