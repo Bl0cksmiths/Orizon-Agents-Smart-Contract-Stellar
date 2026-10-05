@@ -2,6 +2,8 @@
 
 use soroban_sdk::{contracttype, Address, BytesN, String, Symbol, Vec};
 
+pub mod ttl;
+
 /// Registered agent in AgentRegistry.
 #[contracttype]
 #[derive(Clone)]
