@@ -133,7 +133,7 @@ Run it on a schedule well inside the 150-day renew window, e.g. weekly from any 
 0 3 * * 1  cd /path/to/Orizon-Agents-Smart-Contract-Stellar && python3 scripts/extend_ttl.py --apply --source ttl-keeper --quiet >> ~/orizon-ttl.log 2>&1
 ```
 
-A systemd timer or any CI scheduler with the identity's secret (`STELLAR_ACCOUNT`) works the same way. The repo deliberately ships no workflow for it.
+A systemd timer, or any scheduler with the identity in its stellar-cli keystore, works the same way. The repo deliberately ships no workflow for it.
 
 ## Job lifecycle (on-chain)
 
