@@ -19,6 +19,7 @@
 //! - **Lifetime counters** — `count` and `disputed` never decay; they are raw
 //!   evidence for off-chain consumers (dispute rate, volume checks).
 
+use orizon_shared::ttl;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol,
 };
@@ -108,20 +109,24 @@ fn decay_to(state: &mut RepState, current: u64) {
 }
 
 /// Load the agent's RepState decayed to the current epoch — in memory only,
-/// nothing is written back (views must never write).
+/// nothing is written back (views must never write). Inside a submitted
+/// transaction the stored record and the instance get their lifetimes
+/// extended; that touches TTL only, never the data.
 fn decayed_state(env: &Env, agent_id: &Symbol) -> RepState {
     let now = current_epoch(env);
-    let mut state: RepState = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Rep(agent_id.clone()))
-        .unwrap_or(RepState {
-            sum_w: 0,
-            weight: 0,
-            count: 0,
-            disputed: 0,
-            last_epoch: now,
-        });
+    let key = DataKey::Rep(agent_id.clone());
+    let stored: Option<RepState> = env.storage().persistent().get(&key);
+    if stored.is_some() {
+        ttl::extend_persistent(env, &key);
+    }
+    ttl::extend_instance(env);
+    let mut state = stored.unwrap_or(RepState {
+        sum_w: 0,
+        weight: 0,
+        count: 0,
+        disputed: 0,
+        last_epoch: now,
+    });
     decay_to(&mut state, now);
     state
 }
@@ -132,6 +137,7 @@ impl ReputationLedger {
     pub fn __constructor(env: Env, admin: Address, scorer: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Scorer, &scorer);
+        ttl::extend_instance(&env);
     }
 
     /// Record a rating for a completed job.
@@ -183,14 +189,17 @@ impl ReputationLedger {
             state.disputed += 1;
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Rep(agent_id.clone()), &state);
+        let rep_key = DataKey::Rep(agent_id.clone());
+        env.storage().persistent().set(&rep_key, &state);
+        ttl::extend_persistent(&env, &rep_key);
         env.storage().persistent().set(&seen_key, &true);
+        ttl::extend_persistent(&env, &seen_key);
 
         let payer_key = DataKey::PayerW(agent_id.clone(), payer);
         let paid: i128 = env.storage().persistent().get(&payer_key).unwrap_or(0);
         env.storage().persistent().set(&payer_key, &(paid + weight));
+        ttl::extend_persistent(&env, &payer_key);
+        ttl::extend_instance(&env);
 
         env.events().publish(
             (symbol_short!("rated"), agent_id),
@@ -245,10 +254,13 @@ impl ReputationLedger {
     /// to this agent's reputation. 0 by default. Raw evidence for off-chain
     /// Sybil / self-dealing analysis.
     pub fn payer_weight(env: Env, agent_id: Symbol, payer: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PayerW(agent_id, payer))
-            .unwrap_or(0)
+        let key = DataKey::PayerW(agent_id, payer);
+        let paid: Option<i128> = env.storage().persistent().get(&key);
+        if paid.is_some() {
+            ttl::extend_persistent(&env, &key);
+        }
+        ttl::extend_instance(&env);
+        paid.unwrap_or(0)
     }
 
     /// Admin-only: swap the scorer address.
@@ -260,6 +272,7 @@ impl ReputationLedger {
             .ok_or(Error::NotFound)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Scorer, &new_scorer);
+        ttl::extend_instance(&env);
         Ok(())
     }
 }
