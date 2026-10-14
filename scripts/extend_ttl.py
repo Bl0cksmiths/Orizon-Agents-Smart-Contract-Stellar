@@ -175,10 +175,7 @@ def scval_text(raw: bytes, at: int) -> tuple[str, int]:
     (kind,) = struct.unpack_from(">i", raw, at)
     at += 4
     if kind in (SCV_SYMBOL, SCV_BYTES):
-        (n,) = struct.unpack_from(">I", raw, at)
-        body = raw[at + 4 : at + 4 + n]
-        at += 4 + n + (-n % 4)
-        return (body.decode() if kind == SCV_SYMBOL else body.hex()[:16] + "…"), at
+        return opaque_text(kind, raw, at)
     if kind == SCV_ADDRESS:
         (addr_type,) = struct.unpack_from(">i", raw, at)
         # account: PublicKey(type, 32 bytes); contract: 32 bytes.
@@ -195,6 +192,14 @@ def scval_text(raw: bytes, at: int) -> tuple[str, int]:
         head, *rest = items or ["?"]
         return f"{head}({', '.join(rest)})" if rest else head, at
     raise ValueError(kind)
+
+
+def opaque_text(kind: int, raw: bytes, at: int) -> tuple[str, int]:
+    """A symbol as its text, bytes as a hex prefix; the body is padded to 4."""
+    (n,) = struct.unpack_from(">I", raw, at)
+    body = raw[at + 4 : at + 4 + n]
+    at += 4 + n + (-n % 4)
+    return (body.decode() if kind == SCV_SYMBOL else body.hex()[:16] + "…"), at
 
 
 # ── network reads ─────────────────────────────────────────────────────
