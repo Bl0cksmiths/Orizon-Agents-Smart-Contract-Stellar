@@ -10,6 +10,7 @@ fake RPC. Run from the repo root:
 
 from __future__ import annotations
 
+import argparse
 import base64
 import importlib.util
 import struct
@@ -137,3 +138,151 @@ def test_describe_key_renders_account_and_contract_addresses():
 )
 def test_describe_key_falls_back_to_the_xdr(key_xdr):
     assert ext.describe_key(key_xdr) == key_xdr
+
+
+# ── collect ───────────────────────────────────────────────────────────
+
+
+class FakeRpc:
+    """Answers getLedgerEntries from a dict and records every request."""
+
+    def __init__(self, found: dict[str, dict], seq: int = 1_000, close: int = 1_700_000_000):
+        self.found = found
+        self.seq = seq
+        self.close = close
+        self.calls: list[list[str]] = []
+
+    def latest(self) -> tuple[int, int]:
+        return self.seq, self.close
+
+    def entries(self, keys: list[str]) -> dict[str, dict]:
+        self.calls.append(list(keys))
+        return {k: self.found[k] for k in keys if k in self.found}
+
+
+REG = contract_id(1)
+LEDGER = contract_id(2)
+SAC = contract_id(3)
+WASM_A = bytes([0xAA]) * 32
+KEY_JOB = b64(vec(sym("Job"), scbytes(JOB_ID)))
+KEY_RATED = b64(vec(sym("Rated"), sym("calculatorai"), scbytes(RATED_ID)))
+KEY_ADMIN = b64(vec(sym("Admin")))
+
+BOOK = {
+    "network": "testnet",
+    "admin": "G" + "A" * 55,
+    "agent_registry": REG,
+    "short": "C" + "A" * 10,
+    "count": 3,
+    "reputation_ledger": LEDGER,
+    "asset_sac": SAC,
+}
+
+
+def inst_key(contract: str) -> str:
+    return ext.data_ledger_key(contract, ext.INSTANCE_KEY_XDR)
+
+
+def data_key(contract: str, key: str) -> str:
+    return ext.data_ledger_key(contract, base64.b64decode(key))
+
+
+def args_for(keys_file=None, discover=True):
+    return argparse.Namespace(keys_file=keys_file, discover=discover)
+
+
+@pytest.fixture
+def discovered(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    index = {REG: [KEY_JOB, KEY_ADMIN], LEDGER: [KEY_RATED], SAC: ["should-not-be-asked"]}
+
+    def fake(expert: str, contract: str) -> list[str]:
+        calls.append((expert, contract))
+        return list(index[contract])
+
+    monkeypatch.setattr(ext, "discover_keys", fake)
+    return calls
+
+
+def test_collect_reads_instances_data_and_shared_wasm(discovered):
+    rpc = FakeRpc(
+        {
+            inst_key(REG): {"xdr": instance_xdr(REG, WASM_A), "liveUntilLedgerSeq": 5_000},
+            inst_key(LEDGER): {"xdr": instance_xdr(LEDGER, WASM_A), "liveUntilLedgerSeq": 6_000},
+            inst_key(SAC): {"xdr": instance_xdr(SAC, None), "liveUntilLedgerSeq": 7_000},
+            data_key(REG, KEY_JOB): {"xdr": "", "liveUntilLedgerSeq": 900},
+            data_key(LEDGER, KEY_RATED): {"xdr": ""},  # no liveUntilLedgerSeq
+            ext.code_ledger_key(WASM_A): {"xdr": "", "liveUntilLedgerSeq": 8_000},
+        }
+    )
+    entries = ext.collect(BOOK, rpc, args_for(), "testnet")
+
+    assert discovered == [("testnet", REG), ("testnet", LEDGER)]
+    assert [(e.field, e.contract, e.kind, e.key_xdr, e.wasm_hash, e.live_until) for e in entries] == [
+        ("agent_registry", REG, "instance", "", "", 5_000),
+        ("reputation_ledger", LEDGER, "instance", "", "", 6_000),
+        ("asset_sac", SAC, "instance", "", "", 7_000),
+        ("agent_registry", REG, "data", KEY_JOB, "", 900),
+        ("agent_registry", REG, "data", KEY_ADMIN, "", None),
+        ("reputation_ledger", LEDGER, "data", KEY_RATED, "", 0),
+        ("agent_registry", REG, "wasm", "", WASM_A.hex(), 8_000),
+    ]
+    assert [e.ledger_key for e in entries] == [
+        inst_key(REG),
+        inst_key(LEDGER),
+        inst_key(SAC),
+        data_key(REG, KEY_JOB),
+        data_key(REG, KEY_ADMIN),
+        data_key(LEDGER, KEY_RATED),
+        ext.code_ledger_key(WASM_A),
+    ]
+    assert rpc.calls == [[e.ledger_key for e in entries[:-1]], [ext.code_ledger_key(WASM_A)]]
+
+
+def test_collect_without_discovery_or_live_instances(discovered):
+    rpc = FakeRpc({})
+    entries = ext.collect(BOOK, rpc, args_for(discover=False), "public")
+
+    assert discovered == []
+    assert [(e.field, e.kind, e.live_until) for e in entries] == [
+        ("agent_registry", "instance", None),
+        ("reputation_ledger", "instance", None),
+        ("asset_sac", "instance", None),
+    ]
+    assert rpc.calls == [[inst_key(REG), inst_key(LEDGER), inst_key(SAC)], []]
+
+
+def test_collect_merges_the_keys_file_before_discovery(discovered, tmp_path):
+    keys_file = tmp_path / "keys.txt"
+    keys_file.write_text(
+        "# hand-listed keys\n"
+        "\n"
+        f"agent_registry {KEY_ADMIN}   # also discovered\n"
+        f"  asset_sac {KEY_RATED}\n"
+        f"agent_registry {KEY_RATED}\n"
+    )
+    entries = ext.collect(BOOK, FakeRpc({}), args_for(keys_file=str(keys_file)), "testnet")
+
+    assert [(e.field, e.kind, e.key_xdr) for e in entries if e.kind == "data"] == [
+        ("agent_registry", "data", KEY_ADMIN),
+        ("agent_registry", "data", KEY_RATED),
+        ("agent_registry", "data", KEY_JOB),
+        ("reputation_ledger", "data", KEY_RATED),
+        ("asset_sac", "data", KEY_RATED),
+    ]
+
+
+def test_collect_rejects_a_keys_file_field_not_in_the_book(discovered, tmp_path):
+    keys_file = tmp_path / "keys.txt"
+    keys_file.write_text(f"agent_registry {KEY_JOB}\nescrow {KEY_JOB}\n")
+    with pytest.raises(SystemExit) as exc:
+        ext.collect(BOOK, FakeRpc({}), args_for(keys_file=str(keys_file)), "testnet")
+    assert str(exc.value) == f"✗ {keys_file}: no contract 'escrow' in the address book"
+    assert discovered == []
+
+
+def test_collect_rejects_a_malformed_keys_file_line(discovered, tmp_path):
+    keys_file = tmp_path / "keys.txt"
+    keys_file.write_text("agent_registry\n")
+    with pytest.raises(ValueError, match="not enough values to unpack"):
+        ext.collect(BOOK, FakeRpc({}), args_for(keys_file=str(keys_file)), "testnet")
