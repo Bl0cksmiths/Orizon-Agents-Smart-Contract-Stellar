@@ -163,8 +163,9 @@ def describe_key(key_xdr: str) -> str:
     'Job(83ca4422…)' or 'Rated(calculatorai, 72b0b685…)'. Falls back to the
     base64 XDR for anything else."""
     try:
-        text, end = scval_text(base64.b64decode(key_xdr), 0)
-        return text if end == len(base64.b64decode(key_xdr)) else key_xdr
+        raw = base64.b64decode(key_xdr)
+        text, end = scval_text(raw, 0)
+        return text if end == len(raw) else key_xdr
     except (ValueError, struct.error):  # UnicodeDecodeError and binascii.Error are ValueErrors
         return key_xdr
 
