@@ -49,6 +49,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,17 +60,23 @@ DAY_IN_LEDGERS = 17_280
 BATCH = 100
 USER_AGENT = "orizon-extend-ttl/1"
 
+# Each network's passphrase: a public identifier that SDF publishes and every
+# transaction signs over, passed to stellar-cli as --network-passphrase. It
+# names the network; it is not a secret.
+TESTNET_NETWORK_ID = "Test SDF Network ; September 2015"
+MAINNET_NETWORK_ID = "Public Global Stellar Network ; September 2015"
+
 NETWORKS = {
     "testnet": {
         "book": "addresses.json",
         "rpc": "https://soroban-testnet.stellar.org",
-        "passphrase": "Test SDF Network ; September 2015",
+        "network_id": TESTNET_NETWORK_ID,
         "expert": "testnet",
     },
     "mainnet": {
         "book": "addresses.mainnet.json",
         "rpc": None,  # SDF runs no public mainnet RPC: pass --rpc-url.
-        "passphrase": "Public Global Stellar Network ; September 2015",
+        "network_id": MAINNET_NETWORK_ID,
         "expert": "public",
     },
 }
@@ -156,37 +163,55 @@ def describe_key(key_xdr: str) -> str:
     """A readable form of the enum-style keys these contracts use, e.g.
     'Job(83ca4422…)' or 'Rated(calculatorai, 72b0b685…)'. Falls back to the
     base64 XDR for anything else."""
-
-    def scval(raw: bytes, at: int) -> tuple[str, int]:
-        (kind,) = struct.unpack_from(">i", raw, at)
-        at += 4
-        if kind in (SCV_SYMBOL, SCV_BYTES):
-            (n,) = struct.unpack_from(">I", raw, at)
-            body = raw[at + 4 : at + 4 + n]
-            at += 4 + n + (-n % 4)
-            return (body.decode() if kind == SCV_SYMBOL else body.hex()[:16] + "…"), at
-        if kind == SCV_ADDRESS:
-            (addr_type,) = struct.unpack_from(">i", raw, at)
-            # account: PublicKey(type, 32 bytes); contract: 32 bytes.
-            size = 4 + 4 + 32 if addr_type == 0 else 4 + 32
-            text = strkey(6 << 3 if addr_type == 0 else 2 << 3, raw[at + size - 32 : at + size])
-            return f"{text[:5]}…{text[-4:]}", at + size
-        if kind == SCV_VEC:
-            (present, n) = struct.unpack_from(">iI", raw, at)
-            at += 8
-            items = []
-            for _ in range(n if present else 0):
-                item, at = scval(raw, at)
-                items.append(item)
-            head, *rest = items or ["?"]
-            return f"{head}({', '.join(rest)})" if rest else head, at
-        raise ValueError(kind)
-
     try:
-        text, end = scval(base64.b64decode(key_xdr), 0)
-        return text if end == len(base64.b64decode(key_xdr)) else key_xdr
-    except (ValueError, struct.error, UnicodeDecodeError):
+        raw = base64.b64decode(key_xdr)
+        text, end = scval_text(raw, 0)
+        return text if end == len(raw) else key_xdr
+    except (ValueError, struct.error):  # UnicodeDecodeError and binascii.Error are ValueErrors
         return key_xdr
+
+
+def scval_text(raw: bytes, at: int) -> tuple[str, int]:
+    """(readable text, offset just past it) for the ScVal at raw[at]. Renders
+    symbols, bytes, addresses and vecs of those; ValueError for anything else."""
+    (kind,) = struct.unpack_from(">i", raw, at)
+    at += 4
+    if kind in (SCV_SYMBOL, SCV_BYTES):
+        return opaque_text(kind, raw, at)
+    if kind == SCV_ADDRESS:
+        return address_text(raw, at)
+    if kind == SCV_VEC:
+        return vec_text(raw, at)
+    raise ValueError(kind)
+
+
+def opaque_text(kind: int, raw: bytes, at: int) -> tuple[str, int]:
+    """A symbol as its text, bytes as a hex prefix; the body is padded to 4."""
+    (n,) = struct.unpack_from(">I", raw, at)
+    body = raw[at + 4 : at + 4 + n]
+    at += 4 + n + (-n % 4)
+    return (body.decode() if kind == SCV_SYMBOL else body.hex()[:16] + "…"), at
+
+
+def address_text(raw: bytes, at: int) -> tuple[str, int]:
+    """An ScAddress as a shortened G… or C… strkey."""
+    (addr_type,) = struct.unpack_from(">i", raw, at)
+    # account: PublicKey(type, 32 bytes); contract: 32 bytes.
+    size = 4 + 4 + 32 if addr_type == 0 else 4 + 32
+    text = strkey(6 << 3 if addr_type == 0 else 2 << 3, raw[at + size - 32 : at + size])
+    return f"{text[:5]}…{text[-4:]}", at + size
+
+
+def vec_text(raw: bytes, at: int) -> tuple[str, int]:
+    """An enum-style vec: 'Head(item, item)', or just 'Head' on its own."""
+    (present, n) = struct.unpack_from(">iI", raw, at)
+    at += 8
+    items = []
+    for _ in range(n if present else 0):
+        item, at = scval_text(raw, at)
+        items.append(item)
+    head, *rest = items or ["?"]
+    return f"{head}({', '.join(rest)})" if rest else head, at
 
 
 # ── network reads ─────────────────────────────────────────────────────
@@ -261,50 +286,77 @@ class Entry:
     live_until: int | None = None  # None: not found; < now: archived
 
 
-def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
-    contracts = {
-        f: v for f, v in book.items() if isinstance(v, str) and v.startswith("C") and len(v) == 56
-    }
-    instances = {
-        f: Entry(f, c, "instance", data_ledger_key(c, INSTANCE_KEY_XDR)) for f, c in contracts.items()
-    }
-    entries: list[Entry] = list(instances.values())
+def book_contracts(book: dict) -> dict[str, str]:
+    """Address-book field -> contract id, for every field holding a C… strkey."""
+    return {f: v for f, v in book.items() if isinstance(v, str) and v.startswith("C") and len(v) == 56}
 
+
+def read_keys_file(path: str, contracts: dict[str, str]) -> dict[str, list[str]]:
+    """Field -> base64 ScVal keys from '<field> <key>' lines; '#' starts a comment."""
     extra: dict[str, list[str]] = {}
-    if args.keys_file:
-        for line in Path(args.keys_file).read_text().splitlines():
-            line = line.split("#", 1)[0].strip()
-            if line:
-                field, key = line.split()
-                if field not in contracts:
-                    raise SystemExit(f"✗ {args.keys_file}: no contract '{field}' in the address book")
-                extra.setdefault(field, []).append(key)
+    for line in Path(path).read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            field, key = line.split()
+            if field not in contracts:
+                raise SystemExit(f"✗ {path}: no contract '{field}' in the address book")
+            extra.setdefault(field, []).append(key)
+    return extra
 
+
+def data_entries(
+    contracts: dict[str, str], extra: dict[str, list[str]], discover: bool, expert: str
+) -> list[Entry]:
+    """Each contract's persistent entries: its keys-file keys, then (with
+    discover) the index's, without repeats."""
+    entries: list[Entry] = []
     for field, contract in contracts.items():
         keys = list(extra.get(field, []))
-        if args.discover and field not in INSTANCE_ONLY:
+        if discover and field not in INSTANCE_ONLY:
             keys += discover_keys(expert, contract)
         for key in dict.fromkeys(keys):
             entries.append(
                 Entry(field, contract, "data", data_ledger_key(contract, base64.b64decode(key)), key)
             )
+    return entries
 
-    found = rpc.entries([e.ledger_key for e in entries])
+
+def set_live_until(entries: Iterable[Entry], found: dict[str, dict]) -> None:
+    """Record each found entry's live-until; entries RPC didn't return stay None."""
     for e in entries:
         if e.ledger_key in found:
             e.live_until = found[e.ledger_key].get("liveUntilLedgerSeq", 0)
 
+
+def wasm_entries(instances: Iterable[Entry], found: dict[str, dict]) -> list[Entry]:
+    """One entry per distinct wasm behind the live instances, credited to the
+    first contract that runs it. A Stellar Asset Contract has none."""
     wasm: dict[bytes, Entry] = {}
-    for e in instances.values():
+    for e in instances:
         if e.ledger_key in found:
             h = wasm_hash_of(found[e.ledger_key]["xdr"])
             if h and h not in wasm:
                 wasm[h] = Entry(e.field, e.contract, "wasm", code_ledger_key(h), wasm_hash=h.hex())
-    codes = rpc.entries([w.ledger_key for w in wasm.values()])
-    for w in wasm.values():
-        if w.ledger_key in codes:
-            w.live_until = codes[w.ledger_key].get("liveUntilLedgerSeq", 0)
-    return entries + list(wasm.values())
+    return list(wasm.values())
+
+
+def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
+    contracts = book_contracts(book)
+    instances = {
+        f: Entry(f, c, "instance", data_ledger_key(c, INSTANCE_KEY_XDR)) for f, c in contracts.items()
+    }
+    entries: list[Entry] = list(instances.values())
+
+    extra = read_keys_file(args.keys_file, contracts) if args.keys_file else {}
+    entries += data_entries(contracts, extra, args.discover, expert)
+
+    found = rpc.entries([e.ledger_key for e in entries])
+    set_live_until(entries, found)
+
+    wasm = wasm_entries(instances.values(), found)
+    codes = rpc.entries([w.ledger_key for w in wasm])
+    set_live_until(wasm, codes)
+    return entries + wasm
 
 
 def when(live_until: int | None, seq: int, close: int) -> str:
@@ -341,7 +393,7 @@ def commands(entries: list[Entry], seq: int, args, net: dict) -> tuple[list[list
     common = [
         "--source-account", args.source or "<SOURCE>",
         "--rpc-url", args.rpc_url,
-        "--network-passphrase", net["passphrase"],
+        "--network-passphrase", net["network_id"],
     ]  # fmt: skip
     renew_below = args.renew_below_days * DAY_IN_LEDGERS
     archived = [e for e in entries if e.live_until is not None and e.live_until < seq]

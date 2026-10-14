@@ -135,6 +135,13 @@ Run it on a schedule well inside the 150-day renew window, e.g. weekly from any 
 
 A systemd timer, or any scheduler with the identity in its stellar-cli keystore, works the same way. The repo deliberately ships no workflow for it.
 
+The script itself needs only the standard library. Its tests use pytest and fake every RPC read and stellar-cli call, so they never touch a network or send a transaction:
+
+```bash
+python3 -m pip install pytest    # once, in any venv
+python3 -m pytest scripts/tests
+```
+
 ## Job lifecycle (on-chain)
 
 ```
@@ -161,6 +168,7 @@ scripts/
   deploy_testnet.sh       # deploys everything, outputs addresses.json
   fund_accounts.sh        # friendbot for local test accounts
   extend_ttl.py           # storage-lifetime keeper (dry run by default)
+  tests/                  # pytest for extend_ttl.py (offline, all I/O faked)
 ```
 
 MVP contracts are **not upgradable**. Re-deploy on logic changes.

@@ -23,3 +23,4 @@ Cargo.lock
 # diff. That is the point: a deployment that changes a contract id should
 # leave a commit saying so.
 .env
+__pycache__/
