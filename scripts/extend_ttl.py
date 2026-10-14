@@ -303,6 +303,23 @@ def read_keys_file(path: str, contracts: dict[str, str]) -> dict[str, list[str]]
     return extra
 
 
+def data_entries(
+    contracts: dict[str, str], extra: dict[str, list[str]], discover: bool, expert: str
+) -> list[Entry]:
+    """Each contract's persistent entries: its keys-file keys, then (with
+    discover) the index's, without repeats."""
+    entries: list[Entry] = []
+    for field, contract in contracts.items():
+        keys = list(extra.get(field, []))
+        if discover and field not in INSTANCE_ONLY:
+            keys += discover_keys(expert, contract)
+        for key in dict.fromkeys(keys):
+            entries.append(
+                Entry(field, contract, "data", data_ledger_key(contract, base64.b64decode(key)), key)
+            )
+    return entries
+
+
 def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     contracts = book_contracts(book)
     instances = {
@@ -311,15 +328,7 @@ def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     entries: list[Entry] = list(instances.values())
 
     extra = read_keys_file(args.keys_file, contracts) if args.keys_file else {}
-
-    for field, contract in contracts.items():
-        keys = list(extra.get(field, []))
-        if args.discover and field not in INSTANCE_ONLY:
-            keys += discover_keys(expert, contract)
-        for key in dict.fromkeys(keys):
-            entries.append(
-                Entry(field, contract, "data", data_ledger_key(contract, base64.b64decode(key)), key)
-            )
+    entries += data_entries(contracts, extra, args.discover, expert)
 
     found = rpc.entries([e.ledger_key for e in entries])
     for e in entries:
