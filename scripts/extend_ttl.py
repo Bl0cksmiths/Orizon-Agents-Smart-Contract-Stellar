@@ -290,6 +290,19 @@ def book_contracts(book: dict) -> dict[str, str]:
     return {f: v for f, v in book.items() if isinstance(v, str) and v.startswith("C") and len(v) == 56}
 
 
+def read_keys_file(path: str, contracts: dict[str, str]) -> dict[str, list[str]]:
+    """Field -> base64 ScVal keys from '<field> <key>' lines; '#' starts a comment."""
+    extra: dict[str, list[str]] = {}
+    for line in Path(path).read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            field, key = line.split()
+            if field not in contracts:
+                raise SystemExit(f"✗ {path}: no contract '{field}' in the address book")
+            extra.setdefault(field, []).append(key)
+    return extra
+
+
 def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     contracts = book_contracts(book)
     instances = {
@@ -297,15 +310,7 @@ def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     }
     entries: list[Entry] = list(instances.values())
 
-    extra: dict[str, list[str]] = {}
-    if args.keys_file:
-        for line in Path(args.keys_file).read_text().splitlines():
-            line = line.split("#", 1)[0].strip()
-            if line:
-                field, key = line.split()
-                if field not in contracts:
-                    raise SystemExit(f"✗ {args.keys_file}: no contract '{field}' in the address book")
-                extra.setdefault(field, []).append(key)
+    extra = read_keys_file(args.keys_file, contracts) if args.keys_file else {}
 
     for field, contract in contracts.items():
         keys = list(extra.get(field, []))
