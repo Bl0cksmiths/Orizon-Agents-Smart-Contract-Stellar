@@ -179,14 +179,7 @@ def scval_text(raw: bytes, at: int) -> tuple[str, int]:
     if kind == SCV_ADDRESS:
         return address_text(raw, at)
     if kind == SCV_VEC:
-        (present, n) = struct.unpack_from(">iI", raw, at)
-        at += 8
-        items = []
-        for _ in range(n if present else 0):
-            item, at = scval_text(raw, at)
-            items.append(item)
-        head, *rest = items or ["?"]
-        return f"{head}({', '.join(rest)})" if rest else head, at
+        return vec_text(raw, at)
     raise ValueError(kind)
 
 
@@ -205,6 +198,18 @@ def address_text(raw: bytes, at: int) -> tuple[str, int]:
     size = 4 + 4 + 32 if addr_type == 0 else 4 + 32
     text = strkey(6 << 3 if addr_type == 0 else 2 << 3, raw[at + size - 32 : at + size])
     return f"{text[:5]}…{text[-4:]}", at + size
+
+
+def vec_text(raw: bytes, at: int) -> tuple[str, int]:
+    """An enum-style vec: 'Head(item, item)', or just 'Head' on its own."""
+    (present, n) = struct.unpack_from(">iI", raw, at)
+    at += 8
+    items = []
+    for _ in range(n if present else 0):
+        item, at = scval_text(raw, at)
+        items.append(item)
+    head, *rest = items or ["?"]
+    return f"{head}({', '.join(rest)})" if rest else head, at
 
 
 # ── network reads ─────────────────────────────────────────────────────
