@@ -328,6 +328,18 @@ def set_live_until(entries: Iterable[Entry], found: dict[str, dict]) -> None:
             e.live_until = found[e.ledger_key].get("liveUntilLedgerSeq", 0)
 
 
+def wasm_entries(instances: Iterable[Entry], found: dict[str, dict]) -> list[Entry]:
+    """One entry per distinct wasm behind the live instances, credited to the
+    first contract that runs it. A Stellar Asset Contract has none."""
+    wasm: dict[bytes, Entry] = {}
+    for e in instances:
+        if e.ledger_key in found:
+            h = wasm_hash_of(found[e.ledger_key]["xdr"])
+            if h and h not in wasm:
+                wasm[h] = Entry(e.field, e.contract, "wasm", code_ledger_key(h), wasm_hash=h.hex())
+    return list(wasm.values())
+
+
 def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     contracts = book_contracts(book)
     instances = {
@@ -341,15 +353,10 @@ def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     found = rpc.entries([e.ledger_key for e in entries])
     set_live_until(entries, found)
 
-    wasm: dict[bytes, Entry] = {}
-    for e in instances.values():
-        if e.ledger_key in found:
-            h = wasm_hash_of(found[e.ledger_key]["xdr"])
-            if h and h not in wasm:
-                wasm[h] = Entry(e.field, e.contract, "wasm", code_ledger_key(h), wasm_hash=h.hex())
-    codes = rpc.entries([w.ledger_key for w in wasm.values()])
-    set_live_until(wasm.values(), codes)
-    return entries + list(wasm.values())
+    wasm = wasm_entries(instances.values(), found)
+    codes = rpc.entries([w.ledger_key for w in wasm])
+    set_live_until(wasm, codes)
+    return entries + wasm
 
 
 def when(live_until: int | None, seq: int, close: int) -> str:
