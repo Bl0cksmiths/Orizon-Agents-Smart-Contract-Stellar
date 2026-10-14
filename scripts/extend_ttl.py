@@ -191,7 +191,7 @@ def describe_key(key_xdr: str) -> str:
     try:
         text, end = scval(base64.b64decode(key_xdr), 0)
         return text if end == len(base64.b64decode(key_xdr)) else key_xdr
-    except (ValueError, struct.error, UnicodeDecodeError):
+    except (ValueError, struct.error):  # UnicodeDecodeError and binascii.Error are ValueErrors
         return key_xdr
 
 
