@@ -49,6 +49,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -320,6 +321,13 @@ def data_entries(
     return entries
 
 
+def set_live_until(entries: Iterable[Entry], found: dict[str, dict]) -> None:
+    """Record each found entry's live-until; entries RPC didn't return stay None."""
+    for e in entries:
+        if e.ledger_key in found:
+            e.live_until = found[e.ledger_key].get("liveUntilLedgerSeq", 0)
+
+
 def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     contracts = book_contracts(book)
     instances = {
@@ -331,9 +339,7 @@ def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
     entries += data_entries(contracts, extra, args.discover, expert)
 
     found = rpc.entries([e.ledger_key for e in entries])
-    for e in entries:
-        if e.ledger_key in found:
-            e.live_until = found[e.ledger_key].get("liveUntilLedgerSeq", 0)
+    set_live_until(entries, found)
 
     wasm: dict[bytes, Entry] = {}
     for e in instances.values():
@@ -342,9 +348,7 @@ def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
             if h and h not in wasm:
                 wasm[h] = Entry(e.field, e.contract, "wasm", code_ledger_key(h), wasm_hash=h.hex())
     codes = rpc.entries([w.ledger_key for w in wasm.values()])
-    for w in wasm.values():
-        if w.ledger_key in codes:
-            w.live_until = codes[w.ledger_key].get("liveUntilLedgerSeq", 0)
+    set_live_until(wasm.values(), codes)
     return entries + list(wasm.values())
 
 
