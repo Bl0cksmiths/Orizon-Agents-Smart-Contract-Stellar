@@ -59,17 +59,23 @@ DAY_IN_LEDGERS = 17_280
 BATCH = 100
 USER_AGENT = "orizon-extend-ttl/1"
 
+# Each network's passphrase: a public identifier that SDF publishes and every
+# transaction signs over, passed to stellar-cli as --network-passphrase. It
+# names the network; it is not a secret.
+TESTNET_NETWORK_ID = "Test SDF Network ; September 2015"
+MAINNET_NETWORK_ID = "Public Global Stellar Network ; September 2015"
+
 NETWORKS = {
     "testnet": {
         "book": "addresses.json",
         "rpc": "https://soroban-testnet.stellar.org",
-        "passphrase": "Test SDF Network ; September 2015",
+        "network_id": TESTNET_NETWORK_ID,
         "expert": "testnet",
     },
     "mainnet": {
         "book": "addresses.mainnet.json",
         "rpc": None,  # SDF runs no public mainnet RPC: pass --rpc-url.
-        "passphrase": "Public Global Stellar Network ; September 2015",
+        "network_id": MAINNET_NETWORK_ID,
         "expert": "public",
     },
 }
@@ -341,7 +347,7 @@ def commands(entries: list[Entry], seq: int, args, net: dict) -> tuple[list[list
     common = [
         "--source-account", args.source or "<SOURCE>",
         "--rpc-url", args.rpc_url,
-        "--network-passphrase", net["passphrase"],
+        "--network-passphrase", net["network_id"],
     ]  # fmt: skip
     renew_below = args.renew_below_days * DAY_IN_LEDGERS
     archived = [e for e in entries if e.live_until is not None and e.live_until < seq]
