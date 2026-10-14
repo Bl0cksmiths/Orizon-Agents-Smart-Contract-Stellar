@@ -285,10 +285,13 @@ class Entry:
     live_until: int | None = None  # None: not found; < now: archived
 
 
+def book_contracts(book: dict) -> dict[str, str]:
+    """Address-book field -> contract id, for every field holding a C… strkey."""
+    return {f: v for f, v in book.items() if isinstance(v, str) and v.startswith("C") and len(v) == 56}
+
+
 def collect(book: dict, rpc: Rpc, args, expert: str) -> list[Entry]:
-    contracts = {
-        f: v for f, v in book.items() if isinstance(v, str) and v.startswith("C") and len(v) == 56
-    }
+    contracts = book_contracts(book)
     instances = {
         f: Entry(f, c, "instance", data_ledger_key(c, INSTANCE_KEY_XDR)) for f, c in contracts.items()
     }
