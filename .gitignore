@@ -22,4 +22,4 @@ Cargo.lock
 # scripts/deploy_testnet.sh writes these files, so a redeploy now produces a
 # diff. That is the point: a deployment that changes a contract id should
 # leave a commit saying so.
-.env
+.env__pycache__/
