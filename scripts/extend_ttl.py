@@ -177,11 +177,7 @@ def scval_text(raw: bytes, at: int) -> tuple[str, int]:
     if kind in (SCV_SYMBOL, SCV_BYTES):
         return opaque_text(kind, raw, at)
     if kind == SCV_ADDRESS:
-        (addr_type,) = struct.unpack_from(">i", raw, at)
-        # account: PublicKey(type, 32 bytes); contract: 32 bytes.
-        size = 4 + 4 + 32 if addr_type == 0 else 4 + 32
-        text = strkey(6 << 3 if addr_type == 0 else 2 << 3, raw[at + size - 32 : at + size])
-        return f"{text[:5]}…{text[-4:]}", at + size
+        return address_text(raw, at)
     if kind == SCV_VEC:
         (present, n) = struct.unpack_from(">iI", raw, at)
         at += 8
@@ -200,6 +196,15 @@ def opaque_text(kind: int, raw: bytes, at: int) -> tuple[str, int]:
     body = raw[at + 4 : at + 4 + n]
     at += 4 + n + (-n % 4)
     return (body.decode() if kind == SCV_SYMBOL else body.hex()[:16] + "…"), at
+
+
+def address_text(raw: bytes, at: int) -> tuple[str, int]:
+    """An ScAddress as a shortened G… or C… strkey."""
+    (addr_type,) = struct.unpack_from(">i", raw, at)
+    # account: PublicKey(type, 32 bytes); contract: 32 bytes.
+    size = 4 + 4 + 32 if addr_type == 0 else 4 + 32
+    text = strkey(6 << 3 if addr_type == 0 else 2 << 3, raw[at + size - 32 : at + size])
+    return f"{text[:5]}…{text[-4:]}", at + size
 
 
 # ── network reads ─────────────────────────────────────────────────────
