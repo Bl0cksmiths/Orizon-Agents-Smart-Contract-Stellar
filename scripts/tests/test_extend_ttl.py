@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import base64
 import importlib.util
+import json
+import shlex
 import struct
 import sys
 from pathlib import Path
@@ -286,3 +288,137 @@ def test_collect_rejects_a_malformed_keys_file_line(discovered, tmp_path):
     keys_file.write_text("agent_registry\n")
     with pytest.raises(ValueError, match="not enough values to unpack"):
         ext.collect(BOOK, FakeRpc({}), args_for(keys_file=str(keys_file)), "testnet")
+
+
+# ── main: dry run and apply ───────────────────────────────────────────
+
+# Public network identifiers (the --network-passphrase values), not secrets.
+TESTNET_NETWORK_ID = "Test SDF Network ; September 2015"
+MAINNET_NETWORK_ID = "Public Global Stellar Network ; September 2015"
+WASM_LIVE = 2_000_000
+
+
+@pytest.fixture
+def chain(monkeypatch, discovered):
+    """A fake RPC with one registry: low instance and wasm, one archived key."""
+    rpc = FakeRpc(
+        {
+            inst_key(REG): {"xdr": instance_xdr(REG, WASM_A), "liveUntilLedgerSeq": 5_000},
+            data_key(REG, KEY_JOB): {"xdr": "", "liveUntilLedgerSeq": 900},
+            ext.code_ledger_key(WASM_A): {"xdr": "", "liveUntilLedgerSeq": WASM_LIVE},
+        }
+    )
+    urls: list[str] = []
+
+    def make_rpc(url: str) -> FakeRpc:
+        urls.append(url)
+        return rpc
+
+    monkeypatch.setattr(ext, "Rpc", make_rpc)
+    rpc.urls = urls
+    return rpc
+
+
+@pytest.fixture
+def ran(monkeypatch):
+    sent: list[list[str]] = []
+    monkeypatch.setattr(ext, "run", sent.append)
+    return sent
+
+
+def write_book(tmp_path, network: str) -> str:
+    book = tmp_path / "book.json"
+    book.write_text(json.dumps({"network": network, "agent_registry": REG}))
+    return str(book)
+
+
+def run_main(monkeypatch, *argv: str) -> None:
+    monkeypatch.setattr(sys, "argv", ["extend_ttl.py", *argv])
+    ext.main()
+
+
+def expected_commands(source: str, rpc_url: str, passphrase: str) -> tuple[list, list]:
+    common = ["--source-account", source, "--rpc-url", rpc_url, "--network-passphrase", passphrase]
+    extend = ["extend", "--ledgers-to-extend", "3000000", "--ttl-ledger-only"]
+    data = ["--durability", "persistent", "--key-xdr", KEY_JOB]
+    restore = [["stellar", "contract", "restore", "--id", REG, *data, *common]]
+    extends = [
+        ["stellar", "contract", *extend, "--id", REG, *common],
+        ["stellar", "contract", *extend, "--wasm-hash", WASM_A.hex(), *common],
+        ["stellar", "contract", *extend, "--id", REG, *data, *common],
+    ]
+    return restore, extends
+
+
+@pytest.mark.parametrize(
+    ("network", "rpc_args", "rpc_url", "passphrase", "expert"),
+    [
+        ("testnet", [], "https://soroban-testnet.stellar.org", TESTNET_NETWORK_ID, "testnet"),
+        (
+            "mainnet",
+            ["--rpc-url", "https://rpc.example"],
+            "https://rpc.example",
+            MAINNET_NETWORK_ID,
+            "public",
+        ),
+    ],
+)
+def test_dry_run_prints_the_commands_and_sends_nothing(
+    monkeypatch, capsys, tmp_path, chain, ran, discovered, network, rpc_args, rpc_url, passphrase, expert
+):
+    book = write_book(tmp_path, network)
+    run_main(monkeypatch, "--network", network, *rpc_args, "--book", book, "--restore-archived")
+
+    out = capsys.readouterr().out
+    restore, extends = expected_commands("<SOURCE>", rpc_url, passphrase)
+    assert ran == []
+    assert chain.urls == [rpc_url]
+    assert discovered == [(expert, REG)]
+    assert f"── {network}: live-until before (ledger 1000) ──" in out
+    assert "\n4 entries; 3 extend tx, 1 restore tx; 1 archived, 1 not found\n" in out
+    assert "add --restore-archived" not in out
+    assert out.endswith(
+        "\nDry run. These would be sent (add --apply --source <identity>):\n"
+        + "".join(" ".join(shlex.quote(c) for c in cmd) + "\n" for cmd in restore + extends)
+    )
+
+
+def test_dry_run_leaves_archived_entries_alone_by_default(monkeypatch, capsys, tmp_path, chain, ran):
+    run_main(monkeypatch, "--book", write_book(tmp_path, "testnet"))
+
+    out = capsys.readouterr().out
+    _, extends = expected_commands("<SOURCE>", "https://soroban-testnet.stellar.org", TESTNET_NETWORK_ID)
+    assert "\n4 entries; 2 extend tx, 0 restore tx; 1 archived, 1 not found\n" in out
+    assert "  archived entries are left as they are: add --restore-archived to bring them back\n" in out
+    assert out.endswith("".join(" ".join(shlex.quote(c) for c in cmd) + "\n" for cmd in extends[:2]))
+    assert ran == []
+
+
+def test_apply_restores_then_extends_then_reads_again(monkeypatch, capsys, tmp_path, chain, ran):
+    book = write_book(tmp_path, "testnet")
+    run_main(monkeypatch, "--book", book, "--apply", "--source", "ttl-keeper", "--restore-archived")
+
+    restore, extends = expected_commands(
+        "ttl-keeper", "https://soroban-testnet.stellar.org", TESTNET_NETWORK_ID
+    )
+    out = capsys.readouterr().out
+    assert ran == restore + extends
+    assert len(chain.calls) == 4  # two collects, each reading data then wasm
+    assert "Dry run" not in out
+    assert out.index("live-until before") < out.index("── testnet: live-until after (ledger 1000) ──")
+
+
+@pytest.mark.parametrize(
+    ("argv", "book_network", "message"),
+    [
+        (["--network", "mainnet"], "mainnet", "✗ --rpc-url is required for mainnet"),
+        (["--apply"], "testnet", "✗ --apply needs --source <funded stellar-cli identity>"),
+        (["--network", "testnet"], "mainnet", "✗ the address book is for mainnet, not testnet"),
+    ],
+)
+def test_main_refuses_bad_invocations(monkeypatch, tmp_path, chain, ran, argv, book_network, message):
+    with pytest.raises(SystemExit) as exc:
+        run_main(monkeypatch, *argv, "--book", write_book(tmp_path, book_network))
+    assert str(exc.value) == message
+    assert ran == []
+    assert chain.urls == []
