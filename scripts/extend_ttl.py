@@ -162,37 +162,39 @@ def describe_key(key_xdr: str) -> str:
     """A readable form of the enum-style keys these contracts use, e.g.
     'Job(83ca4422…)' or 'Rated(calculatorai, 72b0b685…)'. Falls back to the
     base64 XDR for anything else."""
-
-    def scval(raw: bytes, at: int) -> tuple[str, int]:
-        (kind,) = struct.unpack_from(">i", raw, at)
-        at += 4
-        if kind in (SCV_SYMBOL, SCV_BYTES):
-            (n,) = struct.unpack_from(">I", raw, at)
-            body = raw[at + 4 : at + 4 + n]
-            at += 4 + n + (-n % 4)
-            return (body.decode() if kind == SCV_SYMBOL else body.hex()[:16] + "…"), at
-        if kind == SCV_ADDRESS:
-            (addr_type,) = struct.unpack_from(">i", raw, at)
-            # account: PublicKey(type, 32 bytes); contract: 32 bytes.
-            size = 4 + 4 + 32 if addr_type == 0 else 4 + 32
-            text = strkey(6 << 3 if addr_type == 0 else 2 << 3, raw[at + size - 32 : at + size])
-            return f"{text[:5]}…{text[-4:]}", at + size
-        if kind == SCV_VEC:
-            (present, n) = struct.unpack_from(">iI", raw, at)
-            at += 8
-            items = []
-            for _ in range(n if present else 0):
-                item, at = scval(raw, at)
-                items.append(item)
-            head, *rest = items or ["?"]
-            return f"{head}({', '.join(rest)})" if rest else head, at
-        raise ValueError(kind)
-
     try:
-        text, end = scval(base64.b64decode(key_xdr), 0)
+        text, end = scval_text(base64.b64decode(key_xdr), 0)
         return text if end == len(base64.b64decode(key_xdr)) else key_xdr
     except (ValueError, struct.error):  # UnicodeDecodeError and binascii.Error are ValueErrors
         return key_xdr
+
+
+def scval_text(raw: bytes, at: int) -> tuple[str, int]:
+    """(readable text, offset just past it) for the ScVal at raw[at]. Renders
+    symbols, bytes, addresses and vecs of those; ValueError for anything else."""
+    (kind,) = struct.unpack_from(">i", raw, at)
+    at += 4
+    if kind in (SCV_SYMBOL, SCV_BYTES):
+        (n,) = struct.unpack_from(">I", raw, at)
+        body = raw[at + 4 : at + 4 + n]
+        at += 4 + n + (-n % 4)
+        return (body.decode() if kind == SCV_SYMBOL else body.hex()[:16] + "…"), at
+    if kind == SCV_ADDRESS:
+        (addr_type,) = struct.unpack_from(">i", raw, at)
+        # account: PublicKey(type, 32 bytes); contract: 32 bytes.
+        size = 4 + 4 + 32 if addr_type == 0 else 4 + 32
+        text = strkey(6 << 3 if addr_type == 0 else 2 << 3, raw[at + size - 32 : at + size])
+        return f"{text[:5]}…{text[-4:]}", at + size
+    if kind == SCV_VEC:
+        (present, n) = struct.unpack_from(">iI", raw, at)
+        at += 8
+        items = []
+        for _ in range(n if present else 0):
+            item, at = scval_text(raw, at)
+            items.append(item)
+        head, *rest = items or ["?"]
+        return f"{head}({', '.join(rest)})" if rest else head, at
+    raise ValueError(kind)
 
 
 # ── network reads ─────────────────────────────────────────────────────
